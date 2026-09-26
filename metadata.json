@@ -1,0 +1,6 @@
+{
+  "name": "Brawl Arena",
+  "description": "A frame-perfect 2D platform fighter engine with deterministic kinematic physics, FSM, and touch controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
