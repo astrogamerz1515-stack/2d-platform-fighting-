@@ -1,0 +1,113 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Type (debug, release, all)'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+          - all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Build & Package Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' }}
+
+      - name: Setup Environment Configuration
+        run: |
+          if [ ! -f .env ]; then
+            if [ -f .env.example ]; then
+              cp .env.example .env
+            else
+              touch .env
+            fi
+          fi
+
+      - name: Restore or Generate Debug Keystore
+        run: |
+          if [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+            echo "Successfully restored debug.keystore from base64"
+          elif [ ! -f debug.keystore ]; then
+            keytool -genkey -v -keystore debug.keystore \
+              -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+            echo "Generated new debug.keystore"
+          fi
+
+      - name: Grant Execute Permission to Gradle Wrapper
+        run: chmod +x gradlew
+
+      - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Build Debug APK
+        if: ${{ github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == 'all' || github.event_name != 'workflow_dispatch' }}
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Build Release APK
+        if: ${{ github.event.inputs.build_type == 'release' || github.event.inputs.build_type == 'all' }}
+        run: |
+          if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "No custom release keystore secret configured; building release with debug certificate..."
+            export KEYSTORE_PATH="$(pwd)/debug.keystore"
+            export STORE_PASSWORD="android"
+            export KEY_PASSWORD="android"
+            export KEY_ALIAS="androiddebugkey"
+          else
+            echo "Decoding release keystore from repository secrets..."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release-keystore.jks
+            export KEYSTORE_PATH="$(pwd)/release-keystore.jks"
+            export STORE_PASSWORD="${{ secrets.KEYSTORE_PASSWORD }}"
+            export KEY_PASSWORD="${{ secrets.KEY_PASSWORD }}"
+            export KEY_ALIAS="${{ secrets.KEY_ALIAS }}"
+          fi
+          ./gradlew assembleRelease --stacktrace
+
+      - name: Upload Debug APK Artifact
+        if: ${{ github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == 'all' || github.event_name != 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: brawl-arena-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Release APK Artifact
+        if: ${{ github.event.inputs.build_type == 'release' || github.event.inputs.build_type == 'all' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: brawl-arena-release-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
