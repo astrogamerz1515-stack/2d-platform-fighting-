@@ -1,7 +1,9 @@
 package com.example.game
 
+import com.example.combat.CombatEngine
+import com.example.combat.IntegratedPlayerController
 import com.example.controller.KinematicCharacterController
-import com.example.engine.input.BufferableAction
+import com.example.engine.animation.CharacterAnimationBridge
 import com.example.engine.input.GameInputSnapshot
 import com.example.engine.math.Vector2
 import com.example.fsm.CharacterStateType
@@ -17,9 +19,26 @@ class BrawlhallaGameEngine(
     var onPlayerKO: () -> Unit = {}
 ) {
     val stage = BrawlStage()
-    val player = KinematicCharacterController(
-        config = com.example.core.GameManager.instance.selectedCharacter.value.movementConfig
+    val playerController = IntegratedPlayerController(
+        config = com.example.core.GameManager.instance.selectedCharacter.value.movementConfig,
+        characterId = com.example.core.GameManager.instance.selectedCharacter.value.id
     )
+    val player: KinematicCharacterController get() = playerController.kinematicController
+    val animationBridge: CharacterAnimationBridge get() = playerController.animationBridge
+    val combatEngine: CombatEngine get() = playerController.combatEngine
+
+    // Player 2 (Autonomous Combat NPC AI)
+    val bot = com.example.ai.CombatAIController(
+        difficultyLevel = com.example.ai.AIDifficultyLevel.HARD,
+        characterId = "valkyrie_bot"
+    )
+
+    // Match Combat State
+    var playerDamagePercent: Float = 0f
+    var botDamagePercent: Float = 0f
+    var playerStockScore: Int = 3
+    var botStockScore: Int = 3
+
     val particleSystem = ParticleSystem()
     var isPaused: Boolean = false
 
@@ -52,13 +71,16 @@ class BrawlhallaGameEngine(
     }
 
     fun resetPlayerSpawn() {
-        player.setSpawnPosition(500f, 300f)
+        playerController.setSpawnPosition(400f, 300f)
+        bot.setSpawnPosition(620f, 300f)
     }
 
     fun clearAllEffects() {
         for (i in particleSystem.particles.indices) {
             particleSystem.particles[i].reset()
         }
+        playerController.combatEngine.cancelAttackImmediately()
+        bot.botPlayer.combatEngine.cancelAttackImmediately()
     }
 
     /**
@@ -112,8 +134,62 @@ class BrawlhallaGameEngine(
         val stateBefore = player.stateMachine.getCurrentStateType()
         val groundedBefore = player.isGrounded
 
-        // Update kinematic controller
-        player.fixedUpdate(dt, stage.colliders)
+        // 1. Update Human Player
+        playerController.fixedUpdate(dt, stage.colliders)
+
+        // 2. Update Autonomous NPC AI (Sensing -> Decision Tree -> Input Emulation -> Integrated Controller)
+        val playerIsOffStage = player.position.x < stage.mainPlatformMinX ||
+                player.position.x > stage.mainPlatformMaxX ||
+                stage.isOutOfBounds(player.position.x, player.position.y)
+
+        bot.fixedUpdate(
+            dt = dt,
+            targetBounds = player.bounds,
+            targetVelocity = player.velocity,
+            targetIsOffStage = playerIsOffStage,
+            activeThreatHitboxes = playerController.combatEngine.hitboxSpawner.getActiveHitboxes(),
+            stage = stage
+        )
+
+        // 3. Combat Resolution: Player Hitboxes vs Bot Hurtbox
+        val botHit = playerController.combatEngine.hitboxSpawner.checkCollisionAndResolve(
+            targetHurtbox = bot.bounds,
+            targetDamagePercent = botDamagePercent
+        )
+        if (botHit != null) {
+            botDamagePercent += botHit.damage
+            bot.applyHit(botHit)
+            particleSystem.spawn(
+                type = ParticleType.HIT_SPARK,
+                x = botHit.hitPointX,
+                y = botHit.hitPointY,
+                vx = botHit.knockbackVelocityX * 0.15f,
+                vy = botHit.knockbackVelocityY * 0.15f,
+                size = 28f,
+                decayRate = 0.08f,
+                colorArgb = 0xFFFF4500
+            )
+        }
+
+        // 4. Combat Resolution: Bot Hitboxes vs Player Hurtbox
+        val playerHit = bot.botPlayer.combatEngine.hitboxSpawner.checkCollisionAndResolve(
+            targetHurtbox = player.bounds,
+            targetDamagePercent = playerDamagePercent
+        )
+        if (playerHit != null) {
+            playerDamagePercent += playerHit.damage
+            playerController.applyHit(playerHit)
+            particleSystem.spawn(
+                type = ParticleType.HIT_SPARK,
+                x = playerHit.hitPointX,
+                y = playerHit.hitPointY,
+                vx = playerHit.knockbackVelocityX * 0.15f,
+                vy = playerHit.knockbackVelocityY * 0.15f,
+                size = 28f,
+                decayRate = 0.08f,
+                colorArgb = 0xFFEF4444
+            )
+        }
 
         val stateAfter = player.stateMachine.getCurrentStateType()
         val isGroundedAfter = player.isGrounded
@@ -121,9 +197,8 @@ class BrawlhallaGameEngine(
         // Trigger visual effects on state changes
         triggerVFX(stateBefore, stateAfter, groundedBefore, isGroundedAfter)
 
-        // Blast zone check (Brawlhalla ring out / respawn)
+        // Blast zone check for Player
         if (stage.isOutOfBounds(player.position.x, player.position.y)) {
-            // Spawn KO blast ring
             particleSystem.spawn(
                 type = ParticleType.JUMP_RING,
                 x = player.position.x,
@@ -132,8 +207,25 @@ class BrawlhallaGameEngine(
                 decayRate = 0.04f,
                 colorArgb = 0xFFFF5555
             )
+            playerDamagePercent = 0f
+            if (playerStockScore > 0) playerStockScore--
             onPlayerKO()
-            resetPlayerSpawn()
+            playerController.setSpawnPosition(400f, 300f)
+        }
+
+        // Blast zone check for Bot
+        if (stage.isOutOfBounds(bot.position.x, bot.position.y)) {
+            particleSystem.spawn(
+                type = ParticleType.JUMP_RING,
+                x = bot.position.x,
+                y = bot.position.y,
+                size = 36f,
+                decayRate = 0.04f,
+                colorArgb = 0xFF38BDF8
+            )
+            botDamagePercent = 0f
+            if (botStockScore > 0) botStockScore--
+            bot.setSpawnPosition(620f, 300f)
         }
     }
 
@@ -208,12 +300,23 @@ class BrawlhallaGameEngine(
     }
 
     private fun updateCamera(dt: Float) {
-        // Camera smoothly follows player with look-ahead based on velocity
-        val targetX = player.position.x + player.velocity.x * 0.25f
-        val targetY = player.position.y + player.velocity.y * 0.15f
+        // Camera smoothly frames both fighters
+        val midpointX = (player.position.x + bot.position.x) * 0.5f
+        val midpointY = (player.position.y + bot.position.y) * 0.5f
+        val spanX = abs(player.position.x - bot.position.x)
+        val spanY = abs(player.position.y - bot.position.y)
+
+        val targetX = midpointX.coerceIn(360f, 640f)
+        val targetY = midpointY.coerceIn(240f, 440f)
 
         val lerpFactor = min(1.0f, dt * 6.5f)
         cameraPosition.x += (targetX - cameraPosition.x) * lerpFactor
         cameraPosition.y += (targetY - cameraPosition.y) * lerpFactor
+
+        // Dynamic zoom based on character separation
+        val maxSpread = max(spanX * 0.65f, spanY * 0.85f)
+        val desiredZoom = (580f / max(maxSpread, 380f)).coerceIn(0.72f, 1.15f)
+        cameraTargetZoom = desiredZoom
+        cameraCurrentZoom += (cameraTargetZoom - cameraCurrentZoom) * min(1.0f, dt * 4.0f)
     }
 }

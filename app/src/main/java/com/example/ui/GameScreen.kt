@@ -618,6 +618,28 @@ private fun ActionButtonsPad(
         horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalAlignment = Alignment.Bottom
     ) {
+        // Light Attack Button
+        ArcadeActionButton(
+            label = "LIGHT",
+            subLabel = "ATTACK",
+            color = Color(0xFFFF4500),
+            size = 68.dp,
+            testTag = "button_light_attack",
+            onPressed = { onButtonStateChanged(InputButton.LIGHT_ATTACK, true) },
+            onReleased = { onButtonStateChanged(InputButton.LIGHT_ATTACK, false) }
+        )
+
+        // Heavy / Signature Attack Button
+        ArcadeActionButton(
+            label = "SIG",
+            subLabel = "HEAVY",
+            color = Color(0xFFB388FF),
+            size = 72.dp,
+            testTag = "button_heavy_attack",
+            onPressed = { onButtonStateChanged(InputButton.HEAVY_ATTACK, true) },
+            onReleased = { onButtonStateChanged(InputButton.HEAVY_ATTACK, false) }
+        )
+
         // Fast-Fall / Down Button
         ArcadeActionButton(
             label = "DROP",
@@ -859,6 +881,18 @@ private fun DrawScope.renderGameWorld(
                     center = Offset(px, py)
                 )
             }
+            ParticleType.HIT_SPARK -> {
+                drawCircle(
+                    color = Color(0xFFFF4500).copy(alpha = alpha),
+                    radius = pSize * 1.5f,
+                    center = Offset(px, py)
+                )
+                drawCircle(
+                    color = Color(0xFFFFF7ED).copy(alpha = alpha),
+                    radius = pSize * 0.7f,
+                    center = Offset(px, py)
+                )
+            }
         }
     }
 
@@ -877,43 +911,21 @@ private fun DrawScope.renderGameWorld(
         )
     }
 
-    // Character Body Silhouette & Color based on State
-    val state = player.stateMachine.getCurrentStateType()
-    val bodyColor = when (state) {
-        CharacterStateType.IDLE -> Color(0xFF0EA5E9)
-        CharacterStateType.RUN -> Color(0xFF2563EB)
-        CharacterStateType.JUMP -> Color(0xFF8B5CF6)
-        CharacterStateType.FALL -> Color(0xFFF59E0B)
-        CharacterStateType.DASH -> Color(0xFFEC4899)
-        CharacterStateType.WALL_CLING -> Color(0xFF06B6D4)
-        CharacterStateType.WALL_SLIDE -> Color(0xFF14B8A6)
-        CharacterStateType.HURT -> Color(0xFFEF4444)
-        CharacterStateType.KNOCKBACK -> Color(0xFFDC2626)
-    }
-
-    // Main Torso / Armor
-    drawRoundRect(
-        color = bodyColor,
-        topLeft = Offset(px, py),
-        size = Size(pw, ph),
-        cornerRadius = CornerRadius(10.dp.toPx())
+    // 4. Render Player 1 (Skeletal Cutout Rig + Weapon Trails + Combat Hitboxes)
+    val charProfile = GameManager.instance.selectedCharacter.value
+    engine.playerController.render(
+        drawScope = this,
+        worldToScreen = { wx, wy -> Offset(worldToScreenX(wx), worldToScreenY(wy)) },
+        zoom = zoom,
+        themeColorArgb = charProfile.primaryColorArgb
     )
 
-    // Visor / Eyes indicating facing direction
-    val visorWidth = pw * 0.4f
-    val visorHeight = ph * 0.16f
-    val visorX = if (player.facingDirection > 0f) {
-        px + pw * 0.55f
-    } else {
-        px + pw * 0.05f
-    }
-    val visorY = py + ph * 0.22f
-
-    drawRoundRect(
-        color = Color(0xFFF8FAFC),
-        topLeft = Offset(visorX, visorY),
-        size = Size(visorWidth, visorHeight),
-        cornerRadius = CornerRadius(4.dp.toPx())
+    // 5. Render Autonomous NPC AI Opponent (Crimson Rival Theme)
+    engine.bot.botPlayer.render(
+        drawScope = this,
+        worldToScreen = { wx, wy -> Offset(worldToScreenX(wx), worldToScreenY(wy)) },
+        zoom = zoom,
+        themeColorArgb = 0xFFEF4444
     )
 
     // Fast-Fall Downward Fire Trail

@@ -114,6 +114,16 @@ class KinematicCharacterController(
         )
     }
 
+    fun setIsInvincibleManually(value: Boolean) {
+        isInvincible = value
+    }
+
+    fun setFacingDirectionManually(facing: Float) {
+        if (abs(facing) > 0.01f) {
+            facingDirection = if (facing > 0f) 1.0f else -1.0f
+        }
+    }
+
     /**
      * Fixed physics tick (called strictly at 60Hz: dt = 1/60f).
      */

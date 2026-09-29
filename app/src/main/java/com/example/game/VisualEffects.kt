@@ -6,7 +6,8 @@ enum class ParticleType {
     DUST,
     DASH_GHOST,
     WALL_SPARK,
-    JUMP_RING
+    JUMP_RING,
+    HIT_SPARK
 }
 
 /**

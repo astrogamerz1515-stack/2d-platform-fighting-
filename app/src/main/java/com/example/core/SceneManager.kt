@@ -75,6 +75,9 @@ class SceneManager private constructor() {
         if (fromScene == destination && _transitionPhase.value == TransitionPhase.IDLE) {
             return // Already on this scene
         }
+        if (_targetScene.value == destination && transitionJob?.isActive == true) {
+            return // Already actively transitioning to this destination
+        }
 
         transitionJob?.cancel()
         _targetScene.value = destination
@@ -100,6 +103,7 @@ class SceneManager private constructor() {
                         Log.e("SceneManager", "Error in memory cleanup callback", e)
                     }
                 }
+                memoryCleanupCallbacks.clear()
                 delay(customDelayMs / 3)
 
                 // Phase 2: Force explicit garbage collection
@@ -135,9 +139,13 @@ class SceneManager private constructor() {
 
                 _transitionPhase.value = TransitionPhase.IDLE
                 updateMemoryTelemetry()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Cooperative cancellation (e.g. user requested another scene).
+                // Rethrow to preserve normal coroutine lifecycle without logging an error.
+                throw e
             } catch (e: Exception) {
                 Log.e("SceneManager", "Exception during scene transition to $destination", e)
-                // Fail-safe recovery: fallback to MAIN_MENU if an error occurs
+                // Fail-safe recovery: fallback to MAIN_MENU if an unexpected error occurs
                 _currentScene.value = SceneType.MAIN_MENU
                 _lifecyclePhase.value = BootstrapperLifecyclePhase.MAIN_MENU
                 _targetScene.value = null

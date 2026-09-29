@@ -259,5 +259,481 @@ class ExampleUnitTest {
         ui.dismissDialog()
         assertEquals(com.example.ui.DialogType.NONE, ui.activeDialog.value)
     }
+
+    @Test
+    fun testSkeletalAnimationBridgeAndFramePerfectHitboxWindows() {
+        val bridge = com.example.engine.animation.CharacterAnimationBridge()
+        val controller = com.example.controller.KinematicCharacterController()
+        val dt = 1.0f / 60.0f
+
+        // Initial state should be Idle
+        assertEquals(com.example.engine.animation.AnimationId.IDLE, bridge.currentAnimationId)
+        assertFalse(bridge.isAttackLocked)
+        assertFalse(bridge.activeHitboxes[0].isActive)
+
+        // Trigger neutral attack
+        val attackTriggered = bridge.triggerAttack(com.example.engine.animation.AnimationId.ATTACK_NEUTRAL)
+        assertTrue(attackTriggered)
+        assertTrue(bridge.isAttackLocked)
+        assertEquals(com.example.engine.animation.AnimationId.ATTACK_NEUTRAL, bridge.currentAnimationId)
+
+        // Advance frames 0 -> 3: Hitbox should NOT be active yet (starts at Frame 4)
+        for (i in 0 until 3) {
+            bridge.fixedUpdate(controller, dt)
+        }
+        assertFalse("Hitbox must be inactive before Frame 4", bridge.activeHitboxes[0].isActive)
+
+        // Advance to Frame 4: Hitbox must be ACTIVATED with damage 12.0
+        bridge.fixedUpdate(controller, dt)
+        assertTrue("Hitbox must be active at Frame 4", bridge.activeHitboxes[0].isActive)
+        assertEquals(12f, bridge.activeHitboxes[0].damage, 0.01f)
+
+        // Advance through Frame 5 and 6: Hitbox remains active
+        bridge.fixedUpdate(controller, dt) // Frame 5
+        bridge.fixedUpdate(controller, dt) // Frame 6
+        assertTrue("Hitbox must remain active during active window", bridge.activeHitboxes[0].isActive)
+
+        // Advance to Frame 7+: Hitbox must be DEACTIVATED
+        bridge.fixedUpdate(controller, dt) // Frame 7
+        assertFalse("Hitbox must deactivate at Frame 7", bridge.activeHitboxes[0].isActive)
+
+        // Disrupted State test: While attacking, trigger HURT/HITSTUN
+        bridge.triggerAttack(com.example.engine.animation.AnimationId.ATTACK_SIDE)
+        assertTrue(bridge.isAttackLocked)
+        bridge.syncWithFsmState(
+            state = com.example.fsm.CharacterStateType.HURT,
+            vel = com.example.engine.math.Vector2(0f, 0f),
+            facingDir = 1f,
+            isGrounded = true,
+            stickX = 0f,
+            stickY = 0f,
+            dt = dt,
+            groundMaxSpeed = 500f
+        )
+        assertFalse("HitStun must immediately cancel attack lock", bridge.isAttackLocked)
+        assertEquals(com.example.engine.animation.AnimationId.HITSTUN, bridge.currentAnimationId)
+        assertFalse("HitStun must clear all active hitboxes", bridge.activeHitboxes[0].isActive)
+    }
+
+    @Test
+    fun testSkeletalForwardKinematicsHierarchy() {
+        val bridge = com.example.engine.animation.CharacterAnimationBridge()
+        bridge.recalculateSkeletalMatrices(rootX = 100f, rootY = 200f, facingDir = 1.0f)
+
+        val rootM = bridge.getWorldBoneMatrix(com.example.engine.animation.BoneId.ROOT)
+        org.junit.Assert.assertNotNull(rootM)
+        assertEquals(100f, rootM!!.m02, 0.01f)
+        assertEquals(200f, rootM.m12, 0.01f)
+
+        // Child Torso should have Y translation offset applied
+        val torsoM = bridge.getWorldBoneMatrix(com.example.engine.animation.BoneId.TORSO)
+        org.junit.Assert.assertNotNull(torsoM)
+        assertTrue("Torso should be positioned above root", torsoM!!.m12 < rootM.m12)
+
+        // Head should be positioned above Torso
+        val headM = bridge.getWorldBoneMatrix(com.example.engine.animation.BoneId.HEAD)
+        org.junit.Assert.assertNotNull(headM)
+        assertTrue("Head should be positioned above torso", headM!!.m12 < torsoM.m12)
+    }
+
+    @Test
+    fun testBrawlhallaCombatMatrixDirectionalMoveResolution() {
+        val combatEngine = com.example.combat.CombatEngine()
+
+        // Grounded Light Moves
+        val nLight = combatEngine.resolveDirectionalMove(
+            action = com.example.engine.input.BufferableAction.LIGHT_ATTACK,
+            stickX = 0f,
+            stickY = 0f,
+            isGrounded = true
+        )
+        assertEquals(com.example.combat.BrawlhallaMoveType.NEUTRAL_LIGHT, nLight.moveType)
+
+        val sLight = combatEngine.resolveDirectionalMove(
+            action = com.example.engine.input.BufferableAction.LIGHT_ATTACK,
+            stickX = 0.8f,
+            stickY = 0f,
+            isGrounded = true
+        )
+        assertEquals(com.example.combat.BrawlhallaMoveType.SIDE_LIGHT, sLight.moveType)
+
+        val dLight = combatEngine.resolveDirectionalMove(
+            action = com.example.engine.input.BufferableAction.LIGHT_ATTACK,
+            stickX = 0f,
+            stickY = 0.7f,
+            isGrounded = true
+        )
+        assertEquals(com.example.combat.BrawlhallaMoveType.DOWN_LIGHT, dLight.moveType)
+
+        // Grounded Signature Moves (Heavy)
+        val nSig = combatEngine.resolveDirectionalMove(
+            action = com.example.engine.input.BufferableAction.HEAVY_ATTACK,
+            stickX = 0f,
+            stickY = 0f,
+            isGrounded = true
+        )
+        assertEquals(com.example.combat.BrawlhallaMoveType.NEUTRAL_SIG, nSig.moveType)
+
+        val sSig = combatEngine.resolveDirectionalMove(
+            action = com.example.engine.input.BufferableAction.HEAVY_ATTACK,
+            stickX = -0.9f,
+            stickY = 0f,
+            isGrounded = true
+        )
+        assertEquals(com.example.combat.BrawlhallaMoveType.SIDE_SIG, sSig.moveType)
+
+        val dSig = combatEngine.resolveDirectionalMove(
+            action = com.example.engine.input.BufferableAction.HEAVY_ATTACK,
+            stickX = 0f,
+            stickY = 0.8f,
+            isGrounded = true
+        )
+        assertEquals(com.example.combat.BrawlhallaMoveType.DOWN_SIG, dSig.moveType)
+
+        // Aerial Moves
+        val nAir = combatEngine.resolveDirectionalMove(
+            action = com.example.engine.input.BufferableAction.LIGHT_ATTACK,
+            stickX = 0f,
+            stickY = 0f,
+            isGrounded = false
+        )
+        assertEquals(com.example.combat.BrawlhallaMoveType.NEUTRAL_AIR, nAir.moveType)
+
+        val sAir = combatEngine.resolveDirectionalMove(
+            action = com.example.engine.input.BufferableAction.LIGHT_ATTACK,
+            stickX = 0.7f,
+            stickY = 0f,
+            isGrounded = false
+        )
+        assertEquals(com.example.combat.BrawlhallaMoveType.SIDE_AIR, sAir.moveType)
+
+        val dAir = combatEngine.resolveDirectionalMove(
+            action = com.example.engine.input.BufferableAction.LIGHT_ATTACK,
+            stickX = 0f,
+            stickY = 0.9f,
+            isGrounded = false
+        )
+        assertEquals(com.example.combat.BrawlhallaMoveType.DOWN_AIR, dAir.moveType)
+
+        val recovery = combatEngine.resolveDirectionalMove(
+            action = com.example.engine.input.BufferableAction.HEAVY_ATTACK,
+            stickX = 0f,
+            stickY = -0.5f,
+            isGrounded = false
+        )
+        assertEquals(com.example.combat.BrawlhallaMoveType.RECOVERY, recovery.moveType)
+
+        val groundPound = combatEngine.resolveDirectionalMove(
+            action = com.example.engine.input.BufferableAction.HEAVY_ATTACK,
+            stickX = 0f,
+            stickY = 0.8f,
+            isGrounded = false
+        )
+        assertEquals(com.example.combat.BrawlhallaMoveType.GROUND_POUND, groundPound.moveType)
+    }
+
+    @Test
+    fun testNonBlockingMomentumPreservation() {
+        val player = com.example.combat.IntegratedPlayerController()
+        val dt = 1.0f / 60.0f
+        val floor = ObstacleCollider(
+            bounds = AABB(minX = 0f, minY = 200f, maxX = 1000f, maxY = 300f),
+            type = ColliderType.SOLID
+        )
+
+        // Spawn and settle on floor
+        player.setSpawnPosition(100f, 200f - player.config.colliderHeight * 0.5f)
+        player.fixedUpdate(dt, listOf(floor))
+        player.fixedUpdate(dt, listOf(floor))
+        assertTrue("Player must be grounded", player.isGrounded)
+
+        // Set running velocity
+        player.velocity.x = 400f
+
+        // Trigger Side Light attack while running
+        player.combatEngine.recordAttackInput(
+            action = com.example.engine.input.BufferableAction.LIGHT_ATTACK,
+            stickX = 0.9f,
+            stickY = 0f
+        )
+
+        // Tick one frame
+        player.fixedUpdate(dt, listOf(floor))
+
+        assertTrue("Player must be attacking", player.isAttacking)
+        assertEquals(com.example.combat.BrawlhallaMoveType.SIDE_LIGHT, player.activeCombatMove?.moveType)
+
+        // Momentum must be preserved and boosted by initialImpulseX rather than locked to 0!
+        assertTrue(
+            "Velocity must not be blocked or zeroed during attack (got ${player.velocity.x})",
+            player.velocity.x > 300f
+        )
+
+        // Advance frames through active phase and verify slide deceleration
+        val initialVel = player.velocity.x
+        for (i in 0 until 5) {
+            player.fixedUpdate(dt, listOf(floor))
+        }
+        assertTrue("Velocity should smoothly decay during slide", player.velocity.x < initialVel)
+        assertTrue("Velocity should still remain positive during slide", player.velocity.x > 0f)
+    }
+
+    @Test
+    fun testThreePhaseCombatFrameLifecycleAndHitboxWindows() {
+        val player = com.example.combat.IntegratedPlayerController()
+        val dt = 1.0f / 60.0f
+        val floor = ObstacleCollider(
+            bounds = AABB(minX = 0f, minY = 200f, maxX = 1000f, maxY = 300f),
+            type = ColliderType.SOLID
+        )
+
+        // Spawn and settle on floor
+        player.setSpawnPosition(100f, 200f - player.config.colliderHeight * 0.5f)
+        player.fixedUpdate(dt, listOf(floor))
+        player.fixedUpdate(dt, listOf(floor))
+        assertTrue("Player must be grounded", player.isGrounded)
+
+        // Trigger Neutral Light: Startup=4, Active=4, Recovery=8
+        player.combatEngine.recordAttackInput(
+            action = com.example.engine.input.BufferableAction.LIGHT_ATTACK,
+            stickX = 0f,
+            stickY = 0f
+        )
+
+        // Frame 0: Transitions to STARTUP
+        player.fixedUpdate(dt, listOf(floor))
+        assertEquals(com.example.combat.CombatPhase.STARTUP, player.currentCombatPhase)
+        assertEquals(0, player.combatEngine.hitboxSpawner.getActiveHitboxes().size)
+
+        // Advance remainder of startup frames
+        for (i in 1 until 4) {
+            player.fixedUpdate(dt, listOf(floor))
+            assertEquals(com.example.combat.CombatPhase.STARTUP, player.currentCombatPhase)
+        }
+
+        // Frame 4: Transitions to ACTIVE phase, Hitbox spawns
+        player.fixedUpdate(dt, listOf(floor))
+        assertEquals(com.example.combat.CombatPhase.ACTIVE, player.currentCombatPhase)
+        val activeHitboxes = player.combatEngine.hitboxSpawner.getActiveHitboxes()
+        assertEquals(1, activeHitboxes.size)
+        assertEquals(11f, activeHitboxes[0].damage, 0.01f)
+
+        // Advance through active frames (4 frames total)
+        for (i in 1 until 4) {
+            player.fixedUpdate(dt, listOf(floor))
+            assertEquals(com.example.combat.CombatPhase.ACTIVE, player.currentCombatPhase)
+        }
+
+        // Next frame transitions to RECOVERY, Hitboxes cleared
+        player.fixedUpdate(dt, listOf(floor))
+        assertEquals(com.example.combat.CombatPhase.RECOVERY, player.currentCombatPhase)
+        assertEquals(0, player.combatEngine.hitboxSpawner.getActiveHitboxes().size)
+
+        // Advance recovery frames (8 frames total)
+        for (i in 1..8) {
+            player.fixedUpdate(dt, listOf(floor))
+        }
+
+        // After recovery, returns to IDLE
+        assertEquals(com.example.combat.CombatPhase.IDLE, player.currentCombatPhase)
+        assertFalse(player.isAttacking)
+    }
+
+    @Test
+    fun testCombatInputBufferQueueWindow() {
+        val player = com.example.combat.IntegratedPlayerController()
+        val dt = 1.0f / 60.0f
+        val floor = ObstacleCollider(
+            bounds = AABB(minX = 0f, minY = 200f, maxX = 1000f, maxY = 300f),
+            type = ColliderType.SOLID
+        )
+
+        // Spawn and settle on floor
+        player.setSpawnPosition(100f, 200f - player.config.colliderHeight * 0.5f)
+        player.fixedUpdate(dt, listOf(floor))
+        player.fixedUpdate(dt, listOf(floor))
+        assertTrue("Player must be grounded", player.isGrounded)
+
+        // Start Neutral Light
+        player.combatEngine.recordAttackInput(
+            action = com.example.engine.input.BufferableAction.LIGHT_ATTACK,
+            stickX = 0f,
+            stickY = 0f
+        )
+        player.fixedUpdate(dt, listOf(floor))
+        assertTrue(player.isAttacking)
+
+        // Advance until final recovery frames (15 frames total)
+        for (i in 0 until 14) {
+            player.fixedUpdate(dt, listOf(floor))
+        }
+        assertEquals(com.example.combat.CombatPhase.RECOVERY, player.currentCombatPhase)
+
+        // Input an attack during recovery (should be buffered for 4-6 frames)
+        player.combatEngine.recordAttackInput(
+            action = com.example.engine.input.BufferableAction.LIGHT_ATTACK,
+            stickX = 0.8f,
+            stickY = 0f
+        )
+
+        // Advance remaining recovery frames
+        player.fixedUpdate(dt, listOf(floor))
+        player.fixedUpdate(dt, listOf(floor))
+
+        // The buffered Side Light must fire immediately upon recovery completion!
+        assertTrue("Buffered attack must fire on freedom frame", player.isAttacking)
+        assertEquals(com.example.combat.BrawlhallaMoveType.SIDE_LIGHT, player.activeCombatMove?.moveType)
+    }
+
+    @Test
+    fun testBrawlhallaKnockbackLaunchFormula() {
+        val hitbox = com.example.combat.CombatHitbox().apply {
+            baseKnockback = 200f
+            knockbackScaling = 1.2f
+            knockbackAngleDeg = 45f
+            facingDirection = 1.0f
+        }
+
+        // Target at 100% damage
+        val launch = hitbox.computeLaunchVector(targetDamagePercent = 100f)
+
+        // Total magnitude = 200 + (100 * 0.1 * 1.2 * 1.2) = 200 + 14.4 = 214.4
+        // With angle 45 deg: cos(45) * 214.4 = ~151.6
+        val expectedMagnitude = 200f + (100f * 0.1f * 1.2f * 1.2f)
+        val actualMagnitude = kotlin.math.sqrt(launch.x * launch.x + launch.y * launch.y)
+        assertEquals(expectedMagnitude, actualMagnitude, 0.5f)
+        assertTrue("X launch velocity must be positive when facing right", launch.x > 0f)
+        assertTrue("Y launch velocity must be negative (upward)", launch.y < 0f)
+    }
+
+    @Test
+    fun testAISpatialSensorStageZonesAndLineOfSightRaycast() {
+        val sensor = com.example.ai.AISpatialSensor()
+        val stage = com.example.game.BrawlStage()
+
+        // 1. Test Stage Zone classification
+        val centerBox = com.example.engine.collision.AABB().setFromCenter(500f, 350f, 20f, 30f)
+        assertEquals(com.example.ai.StageZone.CENTER_STAGE, sensor.classifyStageZone(centerBox, stage))
+
+        val leftLedgeBox = com.example.engine.collision.AABB().setFromCenter(250f, 370f, 20f, 30f)
+        assertEquals(com.example.ai.StageZone.LEFT_LEDGE, sensor.classifyStageZone(leftLedgeBox, stage))
+
+        val offStageLeftBox = com.example.engine.collision.AABB().setFromCenter(100f, 370f, 20f, 30f)
+        assertEquals(com.example.ai.StageZone.OFFSTAGE_LEFT, sensor.classifyStageZone(offStageLeftBox, stage))
+
+        val blastZoneBox = com.example.engine.collision.AABB().setFromCenter(500f, 750f, 20f, 30f)
+        assertEquals(com.example.ai.StageZone.CRITICAL_BLAST_ZONE, sensor.classifyStageZone(blastZoneBox, stage))
+
+        // 2. Test Line of Sight evaluation:
+        // A. Clear vision on open stage
+        val snapshotClear = sensor.evaluateEnvironment(
+            botBounds = centerBox,
+            botVelocity = com.example.engine.math.Vector2(0f, 0f),
+            targetBounds = com.example.engine.collision.AABB().setFromCenter(600f, 350f, 20f, 30f),
+            targetVelocity = com.example.engine.math.Vector2(0f, 0f),
+            stage = stage,
+            activeThreatHitboxes = emptyList()
+        )
+        assertTrue("Vision must be clear between two fighters on open stage", snapshotClear.hasLineOfSight)
+
+        // B. Obstructed vision through solid main stage block
+        val botUnderStage = com.example.engine.collision.AABB().setFromCenter(500f, 580f, 20f, 30f)
+        val targetAboveStage = com.example.engine.collision.AABB().setFromCenter(500f, 200f, 20f, 30f)
+        val snapshotObstructed = sensor.evaluateEnvironment(
+            botBounds = botUnderStage,
+            botVelocity = com.example.engine.math.Vector2(0f, 0f),
+            targetBounds = targetAboveStage,
+            targetVelocity = com.example.engine.math.Vector2(0f, 0f),
+            stage = stage,
+            activeThreatHitboxes = emptyList()
+        )
+        assertFalse("Vision must be blocked through solid stage block", snapshotObstructed.hasLineOfSight)
+    }
+
+    @Test
+    fun testAIInputEmulatorReactionLatencyBuffer() {
+        val config = com.example.ai.AIDifficultyConfig(
+            level = com.example.ai.AIDifficultyLevel.HARD,
+            reactionDelayFrames = 5,
+            inputInaccuracyNoise = 0f,
+            dodgeProbability = 0.8f,
+            comboContinuationProbability = 0.8f,
+            edgeGuardAggressiveness = 0.8f,
+            signatureChargeProbability = 0.2f,
+            microSpacingVariance = 0f,
+            attackCommitmentRate = 0.8f
+        )
+        val emulator = com.example.ai.AIInputEmulator(config)
+        val dt = 1.0f / 60.0f
+
+        // Stage an intent to Jump and move right
+        emulator.stagingIntent.requestJump = true
+        emulator.stagingIntent.stickX = 1.0f
+
+        // For frames 0 to 4: Output should NOT yet reflect the staged input due to 5-frame reaction delay!
+        for (i in 0 until 5) {
+            val snapshot = emulator.tick(dt)
+            assertEquals("Jump must not be pressed before reaction latency expires", 0, snapshot.buttons and com.example.engine.input.InputButton.JUMP)
+        }
+
+        // On frame 5: Reaction latency expires, the delayed input must arrive!
+        val delayedSnapshot = emulator.tick(dt)
+        assertTrue("Jump must be pressed once reaction delay frames have elapsed", (delayedSnapshot.buttons and com.example.engine.input.InputButton.JUMP) != 0)
+        assertEquals(1.0f, delayedSnapshot.stickX, 0.01f)
+    }
+
+    @Test
+    fun testCombatAIStateTransitionsRecoveryAndAggressive() {
+        val ai = com.example.ai.CombatAIController(
+            difficultyLevel = com.example.ai.AIDifficultyLevel.TOURNAMENT
+        )
+        val stage = com.example.game.BrawlStage()
+        val dt = 1.0f / 60.0f
+
+        // Case 1: Bot is placed off-stage -> Must transition to DEFENSIVE_RECOVERY
+        ai.setSpawnPosition(100f, 350f) // Far off left stage
+        ai.fixedUpdate(
+            dt = dt,
+            targetBounds = com.example.engine.collision.AABB().setFromCenter(500f, 350f, 20f, 30f),
+            targetVelocity = com.example.engine.math.Vector2(0f, 0f),
+            targetIsOffStage = false,
+            activeThreatHitboxes = emptyList(),
+            stage = stage
+        )
+        assertEquals(com.example.ai.AICombatState.DEFENSIVE_RECOVERY, ai.currentState)
+        assertTrue("Bot must steer horizontally back towards stage", ai.inputEmulator.stagingIntent.stickX > 0f)
+
+        // Case 2: Bot placed close on-stage with target -> Transitions to AGGRESSIVE
+        ai.setSpawnPosition(460f, 347f)
+        val targetClose = com.example.engine.collision.AABB().setFromCenter(500f, 347f, 20f, 30f)
+        ai.fixedUpdate(
+            dt = dt,
+            targetBounds = targetClose,
+            targetVelocity = com.example.engine.math.Vector2(0f, 0f),
+            targetIsOffStage = false,
+            activeThreatHitboxes = emptyList(),
+            stage = stage
+        )
+        assertEquals(com.example.ai.AICombatState.AGGRESSIVE, ai.currentState)
+    }
+
+    @Test
+    fun testAIDifficultyProfileMatrixScaling() {
+        val easy = com.example.ai.AIDifficultyConfig.getConfig(com.example.ai.AIDifficultyLevel.EASY)
+        val tournament = com.example.ai.AIDifficultyConfig.getConfig(com.example.ai.AIDifficultyLevel.TOURNAMENT)
+
+        assertTrue("Easy bot must have higher reaction delay than Tournament bot", easy.reactionDelayFrames > tournament.reactionDelayFrames)
+        assertTrue("Easy bot must have higher input noise than Tournament bot", easy.inputInaccuracyNoise > tournament.inputInaccuracyNoise)
+        assertTrue("Tournament bot must have higher dodge probability", tournament.dodgeProbability > easy.dodgeProbability)
+        assertTrue("Tournament bot must have higher combo continuation rate", tournament.comboContinuationProbability > easy.comboContinuationProbability)
+    }
+
+    @Test
+    fun testSceneManagerTransitionCancellationHandling() {
+        val sceneManager = com.example.core.SceneManager.instance
+        sceneManager.transitionTo(com.example.core.SceneType.MAIN_MENU, customDelayMs = 50L)
+        sceneManager.transitionTo(com.example.core.SceneType.IN_GAME, customDelayMs = 50L)
+        assertEquals(com.example.core.SceneType.IN_GAME, sceneManager.targetScene.value)
+    }
 }
 
