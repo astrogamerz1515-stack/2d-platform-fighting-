@@ -735,5 +735,210 @@ class ExampleUnitTest {
         sceneManager.transitionTo(com.example.core.SceneType.IN_GAME, customDelayMs = 50L)
         assertEquals(com.example.core.SceneType.IN_GAME, sceneManager.targetScene.value)
     }
+
+    @Test
+    fun testParallelStateDecouplingMovementWhileAttacking() {
+        val controller = com.example.controller.ParallelCharacterController()
+        val combatEngine = com.example.combat.BrawlhallaCombatEngine()
+        val floor = com.example.engine.collision.ObstacleCollider(
+            id = "floor",
+            bounds = com.example.engine.collision.AABB(minX = 0f, minY = 400f, maxX = 1000f, maxY = 450f),
+            type = com.example.engine.collision.ColliderType.SOLID
+        )
+        val obstacles = listOf(floor)
+        val dt = 1.0f / 60.0f
+
+        // Spawn on floor
+        controller.setSpawnPosition(500f, 367f)
+        controller.fixedUpdate(dt, obstacles)
+        assertTrue("Controller must be grounded", controller.isGrounded)
+
+        // Build running horizontal velocity
+        controller.inputQueue.onRawInputUpdated(
+            com.example.engine.input.GameInputSnapshot(stickX = 1.0f)
+        )
+        for (i in 0 until 10) {
+            controller.fixedUpdate(dt, obstacles)
+        }
+        val runSpeedBeforeAttack = controller.velocity.x
+        assertTrue("Character must have positive run speed", runSpeedBeforeAttack > 200f)
+
+        // Initiate a Side-Light attack via Combat Engine while running
+        controller.inputQueue.onRawInputUpdated(
+            com.example.engine.input.GameInputSnapshot(
+                buttons = com.example.engine.input.InputButton.LIGHT_ATTACK,
+                stickX = 1.0f
+            )
+        )
+        combatEngine.fixedUpdate(controller, null, dt)
+        controller.fixedUpdate(dt, obstacles)
+
+        // VERIFY PARALLEL DECOUPLING:
+        // Movement state remains GROUNDED, action state becomes ATTACKING!
+        assertEquals(com.example.controller.MovementTrackState.GROUNDED, controller.movementState)
+        assertEquals(com.example.controller.ActionTrackState.ATTACKING, controller.actionState)
+        assertTrue(
+            "Horizontal velocity must NOT be clamped to zero during an attack!",
+            controller.velocity.x > 150f
+        )
+    }
+
+    @Test
+    fun testDashJumpingVelocityTransfer() {
+        val controller = com.example.controller.ParallelCharacterController()
+        val floor = com.example.engine.collision.ObstacleCollider(
+            id = "floor",
+            bounds = com.example.engine.collision.AABB(minX = 0f, minY = 400f, maxX = 1000f, maxY = 450f),
+            type = com.example.engine.collision.ColliderType.SOLID
+        )
+        val obstacles = listOf(floor)
+        val dt = 1.0f / 60.0f
+
+        controller.setSpawnPosition(500f, 367f)
+        controller.fixedUpdate(dt, obstacles)
+
+        // Trigger Dash on ground
+        controller.inputQueue.onRawInputUpdated(
+            com.example.engine.input.GameInputSnapshot(
+                buttons = com.example.engine.input.InputButton.DASH,
+                stickX = 1.0f
+            )
+        )
+        controller.fixedUpdate(dt, obstacles)
+        assertTrue("Character must be dashing", controller.isDashing)
+        assertTrue("Dash jump must be eligible within 4-frame window", controller.dashJumpEligible)
+
+        // Trigger Jump immediately (within 4-frame dash jump window)
+        controller.inputQueue.onRawInputUpdated(
+            com.example.engine.input.GameInputSnapshot(
+                buttons = com.example.engine.input.InputButton.JUMP,
+                stickX = 1.0f
+            )
+        )
+        controller.fixedUpdate(dt, obstacles)
+
+        // Verify Dash Jump velocity transfer:
+        assertEquals(com.example.controller.MovementTrackState.AIRBORNE, controller.movementState)
+        assertTrue("Vertical velocity must be ascending", controller.velocity.y < 0f)
+        assertTrue(
+            "Horizontal velocity must preserve dash speed (>600 px/s)",
+            controller.velocity.x > 600f
+        )
+    }
+
+    @Test
+    fun testGravityCancelingAirborneFreeze() {
+        val controller = com.example.controller.ParallelCharacterController()
+        val combatEngine = com.example.combat.BrawlhallaCombatEngine()
+        val dt = 1.0f / 60.0f
+
+        // Spawn airborne
+        controller.setSpawnPosition(500f, 200f)
+        controller.fixedUpdate(dt, emptyList())
+        assertEquals(com.example.controller.MovementTrackState.AIRBORNE, controller.movementState)
+
+        // 1. Trigger Air Dodge (Spot/Directional Dodge)
+        controller.inputQueue.onRawInputUpdated(
+            com.example.engine.input.GameInputSnapshot(
+                buttons = com.example.engine.input.InputButton.DASH
+            )
+        )
+        controller.fixedUpdate(dt, emptyList())
+        assertEquals(com.example.controller.ActionTrackState.DODGING, controller.actionState)
+        assertTrue("Character must be invincible during dodge", controller.isInvincible)
+
+        // 2. Trigger Heavy Attack within 6-frame window of dodge
+        combatEngine.fixedUpdate(controller, null, dt)
+        assertTrue("Gravity cancel must be eligible within 6-frame window of dodge", combatEngine.gravityCancelEligible)
+
+        controller.inputQueue.onRawInputUpdated(
+            com.example.engine.input.GameInputSnapshot(
+                buttons = com.example.engine.input.InputButton.HEAVY_ATTACK
+            )
+        )
+        combatEngine.fixedUpdate(controller, null, dt)
+        controller.fixedUpdate(dt, emptyList())
+
+        // VERIFY GRAVITY CANCEL EXECUTION:
+        assertTrue("Move must be tagged as gravity-canceled", combatEngine.isGravityCanceledMove)
+        assertTrue("Controller must have gravity cancel active", controller.isGravityCanceled)
+        assertEquals(com.example.combat.BrawlhallaMoveType.NEUTRAL_SIG, combatEngine.activeMove?.moveType)
+        assertEquals("Vertical velocity must be frozen to 0", 0f, controller.velocity.y, 0.01f)
+    }
+
+    @Test
+    fun testChaseDodgeAndInvulnerabilityWindow() {
+        val controller = com.example.controller.ParallelCharacterController()
+        val combatEngine = com.example.combat.BrawlhallaCombatEngine()
+        val dt = 1.0f / 60.0f
+
+        controller.setSpawnPosition(500f, 300f)
+
+        // Confirm hit grants Chase Dodge
+        combatEngine.onHitConfirmed(controller)
+        assertTrue("Chase dodge window must be granted (> 0)", controller.chaseDodgeWindowRemaining > 0f)
+
+        // Trigger Dash during Chase Dodge window
+        controller.inputQueue.onRawInputUpdated(
+            com.example.engine.input.GameInputSnapshot(
+                buttons = com.example.engine.input.InputButton.DASH,
+                stickX = 1.0f
+            )
+        )
+        controller.fixedUpdate(dt, emptyList())
+
+        // Character must enter hyper-speed dodge and become invincible
+        assertEquals(com.example.controller.ActionTrackState.DODGING, controller.actionState)
+        assertTrue("Controller must be invincible during chase dodge", controller.isInvincible)
+        assertTrue("Chase dodge must deliver hyper-speed (> 1000 px/s)", controller.velocity.x > 1000f)
+    }
+
+    @Test
+    fun testDamageKnockbackSolverScalingAndBlastZoneKill() {
+        val stage = com.example.game.BrawlStage()
+        val solver = com.example.combat.DamageKnockbackSolver(stage)
+
+        // 1. Test scaled knockback formula:
+        // Knockback Vector = Base Knockback + (Player Damage % * Attack Knockback Scaling Factor) * Attacker Force Vector
+        val payloadLowDamage = solver.solveKnockback(
+            currentDamagePercent = 0f,
+            attackDamage = 15f,
+            baseKnockback = 200f,
+            knockbackScaling = 1.5f,
+            knockbackAngleDeg = 45f,
+            attackerFacing = 1.0f
+        )
+        // With 15% damage: magnitude = 200 + (15 * 1.5) = 222.5
+        assertEquals(15f, payloadLowDamage.resultingDamagePercent, 0.01f)
+        val magLow = payloadLowDamage.knockbackVelocity.length()
+        assertEquals(222.5f, magLow, 0.5f)
+
+        val payloadHighDamage = solver.solveKnockback(
+            currentDamagePercent = 100f,
+            attackDamage = 20f,
+            baseKnockback = 200f,
+            knockbackScaling = 1.5f,
+            knockbackAngleDeg = 45f,
+            attackerFacing = 1.0f
+        )
+        // With 120% damage: magnitude = 200 + (120 * 1.5) = 380.0
+        assertEquals(120f, payloadHighDamage.resultingDamagePercent, 0.01f)
+        val magHigh = payloadHighDamage.knockbackVelocity.length()
+        assertEquals(380.0f, magHigh, 0.5f)
+
+        // 2. Test Blast Zone instant kill detection
+        var killTriggered = false
+        val outOfBoundsBox = com.example.engine.collision.AABB().setFromCenter(
+            centerX = stage.blastZoneLeft - 50f,
+            centerY = 500f,
+            halfWidth = 20f,
+            halfHeight = 30f
+        )
+        val wasKilled = solver.checkBlastZoneCollision(outOfBoundsBox) {
+            killTriggered = true
+        }
+        assertTrue("Blast zone collision must return true", wasKilled)
+        assertTrue("Instant kill callback must be triggered", killTriggered)
+    }
 }
 

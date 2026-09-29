@@ -34,6 +34,7 @@ class BrawlhallaGameEngine(
     )
 
     // Match Combat State
+    val damageKnockbackSolver = com.example.combat.DamageKnockbackSolver(stage)
     var playerDamagePercent: Float = 0f
     var botDamagePercent: Float = 0f
     var playerStockScore: Int = 3
@@ -197,8 +198,8 @@ class BrawlhallaGameEngine(
         // Trigger visual effects on state changes
         triggerVFX(stateBefore, stateAfter, groundedBefore, isGroundedAfter)
 
-        // Blast zone check for Player
-        if (stage.isOutOfBounds(player.position.x, player.position.y)) {
+        // Blast zone check for Player using DamageKnockbackSolver
+        damageKnockbackSolver.checkBlastZoneCollision(player.bounds) {
             particleSystem.spawn(
                 type = ParticleType.JUMP_RING,
                 x = player.position.x,
@@ -213,8 +214,8 @@ class BrawlhallaGameEngine(
             playerController.setSpawnPosition(400f, 300f)
         }
 
-        // Blast zone check for Bot
-        if (stage.isOutOfBounds(bot.position.x, bot.position.y)) {
+        // Blast zone check for Bot using DamageKnockbackSolver
+        damageKnockbackSolver.checkBlastZoneCollision(bot.bounds) {
             particleSystem.spawn(
                 type = ParticleType.JUMP_RING,
                 x = bot.position.x,
